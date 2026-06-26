@@ -2,51 +2,65 @@
 
 [![CI](https://github.com/sjqtentacles/sml-chan/actions/workflows/ci.yml/badge.svg)](https://github.com/sjqtentacles/sml-chan/actions/workflows/ci.yml)
 
-Buffered FIFO channels and a sequential process runner for Standard ML. Channels
-are unbounded queues you `send` to and `recv` from; the runner executes a list
-of processes in order. It is a lightweight, single-threaded message-passing
-utility — not a preemptive or coroutine scheduler.
+Buffered FIFO channels (unbounded or bounded) plus a deterministic cooperative
+run-to-completion scheduler for Standard ML. Channels are amortized-O(1) queues
+backed by a front/back two-list; `send` never blocks (unless a bounded channel
+is full). The scheduler runs queued thunks in FIFO order and lets a running task
+`fork` more work. It is single-threaded message passing — not preemptive and not
+continuation-based.
 
 ## API sketch
 
 ```sml
-(* A typed, unbounded FIFO channel *)
-val ch : int Chan.chan = Chan.channel ()
+(* unbounded and bounded channels *)
+val ch : int Chan.chan = Chan.channel ()      (* unbounded *)
+val bd : int Chan.chan = Chan.channelN 2      (* bounded to 2 items *)
 
-Chan.send ch 1                 (* enqueue (never blocks) *)
-Chan.send ch 2
-val x = Chan.recv ch           (* dequeue front: 1 *)
+Chan.send ch 1                  (* enqueue (raises Chan.Full if bounded+full) *)
+val ok = Chan.trySend bd 2      (* false instead of raising when full *)
+val x  = Chan.recv ch           (* dequeue front; raises Chan.Empty if empty *)
+val y  = Chan.tryRecv ch        (* NONE if empty *)
 
-(* Processes are just `unit -> unit` thunks *)
-val p : Chan.process = Chan.spawn (fn () => print "hi\n")
-Chan.run [p1, p2, p3]          (* run each process to completion, in order *)
+Chan.peek ch                    (* front without removing *)
+Chan.length ch                  (* item count *)
+Chan.isEmpty ch                 (* bool *)
+Chan.isFull bd                  (* bool (always false for unbounded) *)
+Chan.capacity bd                (* SOME 2 / NONE *)
+Chan.toList ch                  (* front-to-back, non-destructive *)
+Chan.drain ch                   (* remove + return all, front-to-back *)
+Chan.fromList [1,2,3]           (* seed a channel front-to-back *)
+Chan.recvN ch 2                 (* up to n items *)
+Chan.sendAll ch [4,5]           (* enqueue a batch *)
 ```
+
+### Cooperative scheduler
 
 ```sml
-val ch = Chan.channel ()
-val () = (Chan.send ch 1; Chan.send ch 2; Chan.send ch 3)
-val () = Chan.run [ fn () => print (Int.toString (Chan.recv ch))
-                  , fn () => print (Int.toString (Chan.recv ch)) ]  (* "12" *)
+val sc = Chan.scheduler ()
+val () = Chan.fork sc (fn () => print "a")
+val () = Chan.fork sc (fn () =>
+           (print "b"; Chan.fork sc (fn () => print "d")))  (* fork mid-run *)
+val () = Chan.fork sc (fn () => print "c")
+val () = Chan.runAll sc          (* prints "abcd" — FIFO, forks run after the queue *)
 ```
+
+The original sequential runner is kept for back-compat: `Chan.spawn` is the
+identity on `unit -> unit` thunks and `Chan.run ps` runs each in list order.
 
 ## Semantics and limitations
 
-Be aware of what this is and is **not**:
-
-- **Buffered, non-blocking `send`.** A channel is an unbounded queue
-  (`'a list ref`); `send` appends and returns immediately. There is **no
-  rendezvous** — `send` does not wait for a `recv`.
-- **`recv` does not block.** Receiving from an empty channel raises
-  `Fail "recv on empty channel"`. Make sure a value has been sent first (or
-  catch the exception).
-- **Sequential runner.** `Chan.run ps` simply runs each process to completion in
-  list order (`List.app`). It is **not** a cooperative or preemptive scheduler:
-  it does not interleave processes or suspend one that "blocks". `spawn` returns
-  the process thunk unchanged.
-- **Single-threaded.** No OS threads, no parallelism, no `select`/`alt`.
-
-For interleaved cooperative execution you would need a continuation-based
-scheduler, which this library does not provide.
+- **Amortized-O(1) queue.** Backed by a front/back two-list; `send`/`recv` are
+  amortized constant time (the old `'a list ref` made `send` O(n)).
+- **Non-blocking `send`.** No rendezvous: `send` returns immediately. On a
+  **bounded** channel `send` raises `Chan.Full` when full; use `trySend` to get
+  a boolean instead.
+- **`recv` does not block.** Receiving from an empty channel raises `Chan.Empty`;
+  use `tryRecv`/`peek`/`recvN` for non-raising access.
+- **Cooperative, run-to-completion scheduler.** `runAll` drains a FIFO work
+  queue; a running task may `fork` more tasks, which run after the current queue
+  position. It does **not** preempt or suspend a "blocked" task — there are no
+  continuations and no parallelism. The order is deterministic.
+- **Single-threaded.** No OS threads, no `select`/`alt`.
 
 ## Installing with smlpkg
 
@@ -77,10 +91,10 @@ sml.pkg
 Makefile
 lib/github.com/sjqtentacles/sml-chan/
   chan.sig     CHAN signature
-  chan.sml     buffered FIFO channel + sequential runner
+  chan.sml     two-list FIFO channels + bounded channels + cooperative scheduler
   chan.mlb
 test/
-  test.sml     FIFO ordering, recv-empty error, run order
+  test.sml     FIFO ordering, bounded channels, queue API, scheduler
 ```
 
 ## License
