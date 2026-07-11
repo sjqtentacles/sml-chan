@@ -62,6 +62,39 @@ identity on `unit -> unit` thunks and `Chan.run ps` runs each in list order.
   continuations and no parallelism. The order is deterministic.
 - **Single-threaded.** No OS threads, no `select`/`alt`.
 
+## Example
+
+`make example` builds and runs [`examples/demo.sml`](examples/demo.sml), which
+exercises an unbounded channel, a bounded channel's `trySend` backpressure, a
+list-seeded channel drained via `recvN`/`toList`/`drain`/`tryRecv`, and the
+cooperative scheduler's FIFO order with a mid-run `fork` (output is
+byte-identical under MLton and Poly/ML):
+
+```
+Unbounded channel:
+  peek   = 1
+  recv   = 1
+  length = 2
+
+Bounded channel (capacity 2):
+  trySend results = [true,true,false]
+  isFull = true
+
+List-seeded channel [1,2,3,4,5]:
+  recvN 3            = [1,2,3]
+  toList (remainder) = [4,5]
+  drain              = [4,5]
+  tryRecv on emptied channel = NONE
+
+Cooperative scheduler:
+  pending before = 0
+  task a
+  task b
+  task c
+  task d (forked by b)
+  pending after  = 0
+```
+
 ## Installing with smlpkg
 
 ```sh
